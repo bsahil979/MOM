@@ -107,6 +107,7 @@ class Meeting {
   final Duration duration;
   String transcript;
   MomData mom;
+  String? audioFilePath;
 
   Meeting({
     required this.id,
@@ -115,6 +116,7 @@ class Meeting {
     required this.duration,
     required this.transcript,
     required this.mom,
+    this.audioFilePath,
   });
 
   Map<String, dynamic> toJson() {
@@ -125,6 +127,7 @@ class Meeting {
       'durationMs': duration.inMilliseconds,
       'transcript': transcript,
       'mom': mom.toJson(),
+      'audioFilePath': audioFilePath,
     };
   }
 
@@ -138,6 +141,7 @@ class Meeting {
       mom: json['mom'] != null
           ? MomData.fromJson(Map<String, dynamic>.from(json['mom']))
           : MomData.empty(),
+      audioFilePath: json['audioFilePath'],
     );
   }
 
@@ -145,6 +149,7 @@ class Meeting {
     String? title,
     String? transcript,
     MomData? mom,
+    String? audioFilePath,
   }) {
     return Meeting(
       id: id,
@@ -153,6 +158,9 @@ class Meeting {
       duration: duration,
       transcript: transcript ?? this.transcript,
       mom: mom ?? this.mom.copyWith(),
+      audioFilePath: audioFilePath ?? this.audioFilePath,
     );
   }
 }
+
+

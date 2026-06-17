@@ -26,13 +26,13 @@ class MomGeneratorApp extends StatelessWidget {
   Widget build(BuildContext context) {
     final provider = Provider.of<MeetingProvider>(context);
 
-    // Build the minimalistic, elegant dark theme (Obsidian & Chalk)
+    //  elegant dark theme (Obsidian & Chalk)
     final darkTheme = ThemeData(
       useMaterial3: true,
       brightness: Brightness.dark,
       colorScheme: const ColorScheme.dark(
         primary: Colors.white,
-        secondary: Color(0xFF8E8E93), // iOS neutral grey
+        secondary: Color(0xFF8E8E93), //  neutral grey
         background: Color(0xFF000000), // Pure Black
         surface: Color(0xFF121212), // Dark Charcoal
         onPrimary: Colors.black,
@@ -42,7 +42,7 @@ class MomGeneratorApp extends StatelessWidget {
         error: Color(0xFFFF453A),
       ),
       scaffoldBackgroundColor: const Color(0xFF000000),
-      dividerColor: const Color(0xFF262626), // Very subtle line
+      dividerColor: const Color(0xFF262626), 
       textTheme: GoogleFonts.outfitTextTheme(ThemeData.dark().textTheme).copyWith(
         titleLarge: GoogleFonts.outfit(fontWeight: FontWeight.bold, fontSize: 24, color: Colors.white, letterSpacing: -0.5),
         titleMedium: GoogleFonts.outfit(fontWeight: FontWeight.w600, fontSize: 18, color: Colors.white, letterSpacing: -0.2),
@@ -60,7 +60,7 @@ class MomGeneratorApp extends StatelessWidget {
         elevation: 0,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12),
-          side: const BorderSide(color: Color(0xFF262626), width: 1.5), // Crisp industrial border
+          side: const BorderSide(color: Color(0xFF262626), width: 1.5),
         ),
       ),
       inputDecorationTheme: InputDecorationTheme(
@@ -81,7 +81,7 @@ class MomGeneratorApp extends StatelessWidget {
       ),
     );
 
-    // Build the minimalistic, elegant light theme (Alabaster & Charcoal)
+    // elegant light theme (Alabaster & Charcoal)
     final lightTheme = ThemeData(
       useMaterial3: true,
       brightness: Brightness.light,

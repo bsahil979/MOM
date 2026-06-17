@@ -157,7 +157,9 @@ class _RecordingScreenState extends State<RecordingScreen> with SingleTickerProv
 
                 // Scrolling Transcription Text Panel
                 Expanded(
-                  child: _buildTranscriptPanel(provider, theme),
+                  child: provider.isLiveRecording
+                      ? _buildTranscriptPanel(provider, theme)
+                      : _buildLocalRecordingInfoPanel(provider, theme),
                 ),
               ],
             ),
@@ -172,7 +174,7 @@ class _RecordingScreenState extends State<RecordingScreen> with SingleTickerProv
     Color color = theme.colorScheme.secondary;
 
     if (provider.recordingState == RecordingState.recording) {
-      text = 'RECORDING';
+      text = provider.isLiveRecording ? 'RECORDING' : 'LOCAL RECORDING';
       color = theme.colorScheme.onBackground;
     } else if (provider.recordingState == RecordingState.paused) {
       text = 'PAUSED';
@@ -439,6 +441,47 @@ class _RecordingScreenState extends State<RecordingScreen> with SingleTickerProv
             },
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildLocalRecordingInfoPanel(MeetingProvider provider, ThemeData theme) {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: theme.dividerColor, width: 1.5),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.sensors,
+              size: 44,
+              color: theme.colorScheme.primary.withOpacity(0.8),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Recording Offline Meeting',
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Your meeting audio is being saved directly to high-quality device storage. Transcription will begin automatically when you finish the recording.',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                height: 1.45,
+                fontSize: 13,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
       ),
     );
   }

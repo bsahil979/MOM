@@ -15,6 +15,7 @@ class _TranscriptScreenState extends State<TranscriptScreen> {
   late TextEditingController _transcriptController;
   Timer? _loadingTextTimer;
   int _loadingTextIndex = 0;
+  bool _isTranscribing = false;
 
   final List<String> _loadingMessages = [
     'Connecting Gemini API...',
@@ -34,6 +35,56 @@ class _TranscriptScreenState extends State<TranscriptScreen> {
     _transcriptController = TextEditingController(
       text: provider.currentMeeting?.transcript ?? '',
     );
+
+    // If we have an audio file but no transcript, trigger transcription automatically
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (provider.currentMeeting != null &&
+          provider.currentMeeting!.audioFilePath != null &&
+          (provider.currentMeeting!.transcript.isEmpty ||
+           provider.currentMeeting!.transcript == 'No audio content recorded.')) {
+        _runAudioTranscription(provider);
+      }
+    });
+  }
+
+  Future<void> _runAudioTranscription(MeetingProvider provider) async {
+    setState(() {
+      _isTranscribing = true;
+    });
+
+    try {
+      await provider.transcribeCurrentMeetingAudio();
+      _transcriptController.text = provider.currentMeeting?.transcript ?? '';
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Audio transcribed successfully by custom API!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Transcription failed: ${e.toString()}'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+            duration: const Duration(seconds: 10),
+            action: SnackBarAction(
+              label: 'Retry',
+              textColor: Colors.white,
+              onPressed: () => _runAudioTranscription(provider),
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isTranscribing = false;
+        });
+      }
+    }
   }
 
   @override
@@ -220,7 +271,7 @@ class _TranscriptScreenState extends State<TranscriptScreen> {
                         CircularProgressIndicator(strokeWidth: 3, color: theme.colorScheme.onBackground),
                         const SizedBox(height: 24),
                         Text(
-                          'Processing Transcript',
+                          _isTranscribing ? 'Transcribing Audio' : 'Processing Transcript',
                           style: theme.textTheme.titleMedium?.copyWith(
                             fontWeight: FontWeight.bold,
                             fontSize: 18,
@@ -232,8 +283,14 @@ class _TranscriptScreenState extends State<TranscriptScreen> {
                           child: AnimatedSwitcher(
                             duration: const Duration(milliseconds: 200),
                             child: Text(
-                              _loadingMessages[_loadingTextIndex],
-                              key: ValueKey<int>(_loadingTextIndex),
+                              _isTranscribing
+                                  ? (provider.apiMode == ApiMode.custom
+                                      ? 'Uploading audio file to custom API...'
+                                      : (provider.apiMode == ApiMode.gemini
+                                          ? 'Transcribing audio using Gemini API...'
+                                          : 'Simulating audio file transcription...'))
+                                  : _loadingMessages[_loadingTextIndex],
+                              key: ValueKey<dynamic>(_isTranscribing ? 'transcribe' : _loadingTextIndex),
                               style: theme.textTheme.bodyMedium?.copyWith(
                                 color: theme.colorScheme.secondary,
                                 fontWeight: FontWeight.w500,

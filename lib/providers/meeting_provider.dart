@@ -1,29 +1,54 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:record/record.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:file_picker/file_picker.dart';
+
 import '../models/meeting.dart';
 import '../services/gemini_service.dart';
+import '../services/api_service.dart';
 
 enum RecordingState { idle, recording, paused }
+enum ApiMode { simulation, gemini, custom }
 
 class MeetingProvider with ChangeNotifier {
   List<Meeting> _meetings = [];
   bool _isLoading = false;
   String _geminiApiKey = '';
   bool _isDarkTheme = true;
+  bool _isLiveRecording = true;
+
+  // API Configuration
+  ApiMode _apiMode = ApiMode.simulation;
+  String _customApiBaseUrl = 'http://10.0.2.2:8000';
 
   // Recording State variables
   RecordingState _recordingState = RecordingState.idle;
   int _recordingDurationSeconds = 0;
-  List<double> _audioWaveLevels = List.filled(30, 0.1);
+  List<double> _audioWaveLevels = List.filled(30, 0.1, growable: true);
   String _liveTranscriptText = '';
+  String _baseTranscriptText = '';
   Timer? _recordingTimer;
   Timer? _waveTimer;
   Timer? _transcriptTimer;
 
-  // Temporary container for the meeting currently being recorded/processed
+  // Audio Recorder
+  final AudioRecorder _audioRecorder = AudioRecorder();
+  String? _recordedFilePath;
+  StreamSubscription<Amplitude>? _amplitudeSubscription;
+
+   
+  final stt.SpeechToText _speechToText = stt.SpeechToText(); //SpeechToText 
+  bool _speechToTextInitialized = false;
+  bool _isSpeechAvailable = false;
+
+  // Temporary container for the meeting 
   Meeting? _currentMeeting;
 
   // Simulation templates
@@ -83,7 +108,7 @@ class MeetingProvider with ChangeNotifier {
     }
   ];
 
-  // List of live transcription sentences to simulate speech-to-text
+
   final List<String> _liveTranscriptSimSentences = [
     "Testing microphone... Connection established.",
     "Moderator: Good morning everyone, thanks for joining the meeting.",
@@ -107,6 +132,9 @@ class MeetingProvider with ChangeNotifier {
   List<double> get audioWaveLevels => _audioWaveLevels;
   String get liveTranscriptText => _liveTranscriptText;
   Meeting? get currentMeeting => _currentMeeting;
+  ApiMode get apiMode => _apiMode;
+  String get customApiBaseUrl => _customApiBaseUrl;
+  bool get isLiveRecording => _isLiveRecording;
 
   String get formattedDuration {
     final minutes = (_recordingDurationSeconds ~/ 60).toString().padLeft(2, '0');
@@ -114,7 +142,7 @@ class MeetingProvider with ChangeNotifier {
     return '$minutes:$seconds';
   }
 
-  // Constructor
+  
   MeetingProvider() {
     loadSettings();
     loadMeetings();
@@ -125,16 +153,34 @@ class MeetingProvider with ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     _geminiApiKey = prefs.getString('gemini_api_key') ?? '';
     _isDarkTheme = prefs.getBool('is_dark_theme') ?? true;
+    
+    final modeStr = prefs.getString('api_mode') ?? 'simulation';
+    _apiMode = ApiMode.values.firstWhere(
+      (e) => e.toString().split('.').last == modeStr,
+      orElse: () => ApiMode.simulation,
+    );
+    
+    _customApiBaseUrl = prefs.getString('custom_api_base_url') ?? 'http://10.0.2.2:8000';
     notifyListeners();
   }
 
   // Save Settings
-  Future<void> saveSettings({required String apiKey, required bool isDarkTheme}) async {
+  Future<void> saveSettings({
+    required String apiKey,
+    required bool isDarkTheme,
+    required ApiMode apiMode,
+    required String customApiBaseUrl,
+  }) async {
     final prefs = await SharedPreferences.getInstance();
     _geminiApiKey = apiKey.trim();
     _isDarkTheme = isDarkTheme;
+    _apiMode = apiMode;
+    _customApiBaseUrl = customApiBaseUrl.trim();
+
     await prefs.setString('gemini_api_key', _geminiApiKey);
     await prefs.setBool('is_dark_theme', _isDarkTheme);
+    await prefs.setString('api_mode', _apiMode.toString().split('.').last);
+    await prefs.setString('custom_api_base_url', _customApiBaseUrl);
     notifyListeners();
   }
 
@@ -188,46 +234,91 @@ class MeetingProvider with ChangeNotifier {
   }
 
   // Start a new recording session
-  void startRecording() {
+  Future<void> startRecording({bool isLive = true}) async {
     if (_recordingState != RecordingState.idle) return;
+    _isLiveRecording = isLive;
 
-    _recordingState = RecordingState.recording;
-    _recordingDurationSeconds = 0;
-    _audioWaveLevels = List.filled(30, 0.1);
-    _liveTranscriptText = '';
-    
-    // Create new temporary meeting model
-    _currentMeeting = Meeting(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      title: 'New Meeting ${DateTime.now().day}/${DateTime.now().month}',
-      date: DateTime.now(),
-      duration: Duration.zero,
-      transcript: '',
-      mom: MomData.empty(),
-    );
-
-    // Timer for duration tick
-    _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (_recordingState == RecordingState.recording) {
-        _recordingDurationSeconds++;
-        notifyListeners();
+    try {
+      String filePath = '';
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      if (!kIsWeb) {
+        final directory = await getApplicationDocumentsDirectory();
+        filePath = '${directory.path}/recording_$timestamp.m4a';
       }
-    });
+      _recordedFilePath = filePath;
 
-    // Timer for animating sound waves
-    final random = Random();
-    _waveTimer = Timer.periodic(const Duration(milliseconds: 150), (timer) {
-      if (_recordingState == RecordingState.recording) {
-        // Shift wave left and add new random level
-        _audioWaveLevels.removeAt(0);
-        // Random level between 0.15 and 0.95
-        _audioWaveLevels.add(0.15 + random.nextDouble() * 0.8);
-        notifyListeners();
+      await _audioRecorder.start(
+        const RecordConfig(encoder: AudioEncoder.aacLc),
+        path: filePath,
+      );
+
+      _recordingState = RecordingState.recording;
+      _recordingDurationSeconds = 0;
+      _audioWaveLevels = List.filled(30, 0.1, growable: true);
+      _liveTranscriptText = '';
+      _baseTranscriptText = '';
+      
+      _currentMeeting = Meeting(
+        id: timestamp.toString(),
+        title: isLive
+            ? 'Live Meeting ${DateTime.now().day}/${DateTime.now().month}'
+            : 'Phone Recording ${DateTime.now().day}/${DateTime.now().month}',
+        date: DateTime.now(),
+        duration: Duration.zero,
+        transcript: '',
+        mom: MomData.empty(),
+        audioFilePath: filePath.isNotEmpty ? filePath : null,
+      );
+
+      // Duration timer
+      _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+        if (_recordingState == RecordingState.recording) {
+          _recordingDurationSeconds++;
+          notifyListeners();
+        }
+      });
+
+      // Wave animator (live amplitude or simulation based on mode)
+      _amplitudeSubscription = _audioRecorder
+          .onAmplitudeChanged(const Duration(milliseconds: 150))
+          .listen((amp) {
+        if (_recordingState == RecordingState.recording) {
+          _audioWaveLevels.removeAt(0);
+          final double db = amp.current;
+          double level = 0.1;
+          if (db > -50) {
+            level = 0.1 + ((db + 50) / 50) * 0.9;
+            level = level.clamp(0.1, 1.0);
+          } else {
+            level = 0.05 + Random().nextDouble() * 0.1;
+          }
+          _audioWaveLevels.add(level);
+          notifyListeners();
+        }
+      });
+
+      // Speech recognition / transcription setup
+      if (_isLiveRecording) {
+        if (_apiMode == ApiMode.simulation) {
+          _startSimulationTranscript();
+        } else {
+          await _startRealSpeechToText();
+        }
       }
-    });
 
-    // Timer for simulating speech-to-text typing
+      notifyListeners();
+    } catch (e) {
+      print('Error starting recording: $e');
+      _recordingState = RecordingState.idle;
+      _currentMeeting = null;
+      notifyListeners();
+    }
+  }
+
+  // Helper to start simulated transcription
+  void _startSimulationTranscript() {
     int sentenceIndex = 0;
+    _transcriptTimer?.cancel();
     _transcriptTimer = Timer.periodic(const Duration(seconds: 4), (timer) {
       if (_recordingState == RecordingState.recording) {
         if (sentenceIndex < _liveTranscriptSimSentences.length) {
@@ -240,38 +331,103 @@ class MeetingProvider with ChangeNotifier {
           sentenceIndex++;
           notifyListeners();
         } else {
-          // Loop or stop adding sentences
-          sentenceIndex = 0; // wrap around
+          sentenceIndex = 0;
         }
       }
     });
+  }
 
-    notifyListeners();
+  // Helper to start real Speech-to-Text
+  Future<void> _startRealSpeechToText() async {
+    try {
+      if (!_speechToTextInitialized) {
+        _isSpeechAvailable = await _speechToText.initialize(
+          onStatus: (status) => print('SpeechToText Status: $status'),
+          onError: (error) => print('SpeechToText Error: $error'),
+        );
+        _speechToTextInitialized = true;
+      }
+
+      if (_isSpeechAvailable) {
+        await _speechToText.listen(
+          onResult: (result) {
+            _liveTranscriptText = _baseTranscriptText.isEmpty
+                ? result.recognizedWords
+                : '$_baseTranscriptText\n${result.recognizedWords}';
+            notifyListeners();
+          },
+          listenFor: const Duration(hours: 1),
+          pauseFor: const Duration(seconds: 10),
+          cancelOnError: false,
+          partialResults: true,
+          listenMode: stt.ListenMode.dictation,
+        );
+      } else {
+        print('Speech recognition not available on this device');
+        _liveTranscriptText = 'Speech recognition not available. Streaming mock feed instead...\n';
+        _startSimulationTranscript();
+      }
+    } catch (e) {
+      print('Error starting SpeechToText: $e');
+      _liveTranscriptText = 'SpeechToText failed: $e. Streaming mock feed instead...\n';
+      _startSimulationTranscript();
+    }
   }
 
   // Pause recording
-  void pauseRecording() {
+  Future<void> pauseRecording() async {
     if (_recordingState != RecordingState.recording) return;
-    _recordingState = RecordingState.paused;
-    notifyListeners();
+    try {
+      await _audioRecorder.pause();
+      if (_apiMode != ApiMode.simulation && _speechToText.isListening) {
+        await _speechToText.stop();
+      }
+      _recordingState = RecordingState.paused;
+      notifyListeners();
+    } catch (e) {
+      print('Error pausing recorder: $e');
+    }
   }
 
   // Resume recording
-  void resumeRecording() {
+  Future<void> resumeRecording() async {
     if (_recordingState != RecordingState.paused) return;
-    _recordingState = RecordingState.recording;
-    notifyListeners();
+    try {
+      await _audioRecorder.resume();
+      if (_apiMode != ApiMode.simulation) {
+        _baseTranscriptText = _liveTranscriptText;
+        await _startRealSpeechToText();
+      }
+      _recordingState = RecordingState.recording;
+      notifyListeners();
+    } catch (e) {
+      print('Error resuming recorder: $e');
+    }
   }
 
   // Stop recording and capture result
-  void stopRecording() {
+  Future<void> stopRecording() async {
     if (_recordingState == RecordingState.idle) return;
 
     _recordingTimer?.cancel();
     _waveTimer?.cancel();
     _transcriptTimer?.cancel();
+    _amplitudeSubscription?.cancel();
+
+    if (_apiMode != ApiMode.simulation && _speechToText.isListening) {
+      await _speechToText.stop();
+    }
 
     _recordingState = RecordingState.idle;
+
+    try {
+      final path = await _audioRecorder.stop();
+      if (path != null) {
+        _recordedFilePath = path;
+      }
+    } catch (e) {
+      print('Error stopping recorder: $e');
+    }
 
     if (_currentMeeting != null) {
       _currentMeeting = Meeting(
@@ -283,6 +439,7 @@ class MeetingProvider with ChangeNotifier {
             ? 'No audio content recorded.' 
             : _liveTranscriptText,
         mom: MomData.empty(),
+        audioFilePath: _recordedFilePath,
       );
     }
 
@@ -290,12 +447,31 @@ class MeetingProvider with ChangeNotifier {
   }
 
   // Cancel recording session
-  void cancelRecording() {
+  Future<void> cancelRecording() async {
     _recordingTimer?.cancel();
     _waveTimer?.cancel();
     _transcriptTimer?.cancel();
+    _amplitudeSubscription?.cancel();
+    
+    if (_apiMode != ApiMode.simulation && _speechToText.isListening) {
+      await _speechToText.stop();
+    }
+
+    try {
+      await _audioRecorder.stop();
+      if (_recordedFilePath != null && !kIsWeb) {
+        final file = File(_recordedFilePath!);
+        if (await file.exists()) {
+          await file.delete();
+        }
+      }
+    } catch (e) {
+      print('Error cancelling recorder: $e');
+    }
+
     _recordingState = RecordingState.idle;
     _currentMeeting = null;
+    _recordedFilePath = null;
     notifyListeners();
   }
 
@@ -323,7 +499,14 @@ class MeetingProvider with ChangeNotifier {
     notifyListeners();
 
     try {
-      if (_geminiApiKey.isNotEmpty) {
+      if (_apiMode == ApiMode.custom) {
+        // Custom Backend API Mode
+        final generatedMom = await MeetingApiService.generateMoM(
+          _currentMeeting!.transcript, 
+          _customApiBaseUrl,
+        );
+        _currentMeeting!.mom = generatedMom;
+      } else if (_apiMode == ApiMode.gemini && _geminiApiKey.isNotEmpty) {
         // Real API Mode
         final generatedMom = await GeminiService.generateMoM(
           _currentMeeting!.transcript, 
@@ -349,13 +532,100 @@ class MeetingProvider with ChangeNotifier {
     } catch (e) {
       // If real API fails, fall back to simulation to ensure the app stays perfectly interactive, 
       // but log/show warning to user.
-      print('Gemini failed, falling back to simulated MoM: $e');
+      print('MoM Generation failed, falling back to simulated MoM: $e');
       await Future.delayed(const Duration(milliseconds: 1200));
       final template = _simulationTemplates[0];
       _currentMeeting!.mom = MomData.fromJson(template['mom']);
       if (_currentMeeting!.title.startsWith('New Meeting')) {
         _currentMeeting!.title = '${template['title']} (Simulated)';
       }
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Allows the user to select an audio file from their phone/computer, and sets it
+  /// as the current meeting context.
+  Future<Meeting?> pickAndProcessAudioFile() async {
+    _isLoading = true;
+    notifyListeners();
+
+    try {
+      final FilePickerResult? result = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['mp3', 'wav', 'm4a', 'mp4', 'aac'],
+      );
+
+      if (result == null || result.files.single.path == null) {
+        _isLoading = false;
+        notifyListeners();
+        return null;
+      }
+
+      final String filePath = result.files.single.path!;
+      final String fileName = result.files.single.name;
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+
+      _currentMeeting = Meeting(
+        id: 'upload_$timestamp',
+        title: 'Uploaded Audio: ${fileName.split('.').first}',
+        date: DateTime.now(),
+        duration: Duration.zero,
+        transcript: '',
+        mom: MomData.empty(),
+        audioFilePath: filePath,
+      );
+
+      _liveTranscriptText = '';
+      _isLiveRecording = false;
+
+      _isLoading = false;
+      notifyListeners();
+      return _currentMeeting;
+    } catch (e) {
+      print('Error picking audio file: $e');
+      _isLoading = false;
+      notifyListeners();
+      rethrow;
+    }
+  }
+
+  /// Sends the saved audio file path to custom backend API or Gemini for speech-to-text.
+  Future<void> transcribeCurrentMeetingAudio() async {
+    if (_currentMeeting == null || _currentMeeting!.audioFilePath == null) {
+      throw Exception('No recorded audio file to transcribe.');
+    }
+
+    _isLoading = true;
+    notifyListeners();
+
+    try {
+      final filePath = _currentMeeting!.audioFilePath!;
+      String transcriptText = '';
+
+      if (_apiMode == ApiMode.custom) {
+        transcriptText = await MeetingApiService.transcribeAudio(
+          filePath,
+          _customApiBaseUrl,
+        );
+      } else if (_apiMode == ApiMode.gemini && _geminiApiKey.isNotEmpty) {
+        transcriptText = await GeminiService.transcribeAudioFile(
+          filePath,
+          _geminiApiKey,
+        );
+      } else {
+        // Simulation mode: Delay for realism, then load a random seeded transcript
+        await Future.delayed(const Duration(seconds: 3));
+        final template = _simulationTemplates[Random().nextInt(_simulationTemplates.length)];
+        transcriptText = template['transcript'];
+      }
+
+      _currentMeeting!.transcript = transcriptText;
+      _liveTranscriptText = transcriptText;
+    } catch (e) {
+      print('Transcription error: $e');
+      rethrow;
     } finally {
       _isLoading = false;
       notifyListeners();
@@ -420,6 +690,8 @@ class MeetingProvider with ChangeNotifier {
     _recordingTimer?.cancel();
     _waveTimer?.cancel();
     _transcriptTimer?.cancel();
+    _amplitudeSubscription?.cancel();
+    _audioRecorder.dispose();
     super.dispose();
   }
 }
